@@ -58,8 +58,45 @@ def add_transaction(date, amount, category_name, trans_type, description=""):
     conn.commit()
     conn.close()
 
+
+def get_transactions(category_name=None, month=None):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    query = """
+        SELECT t.id, t.date, c.type, c.name, t.amount, t.description
+        FROM transactions t
+        JOIN categories c ON t.category_id = c.id
+        WHERE 1=1
+    """
+    params = []
+
+    if category_name:
+        query += " AND LOWER(c.name) = LOWER(?)"
+        params.append(category_name.strip())
+
+    if month:
+        query += " AND strftime('%Y-%m', t.date) = ?"
+        params.append(month.strip())
+
+    query += " ORDER BY t.date DESC, t.id DESC"
+
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
 if __name__ == "__main__":
     init_db()
-    add_transaction("2026-11-14", 1500.00, "Salary", "income", "November paycheck")
-    add_transaction("2026-11-14", 45.50, "Groceries", "expense", "Weekly food shop")
-    print("Sample transactions added!")
+
+    print("--- All Transactions ---")
+    for row in get_transactions():
+        print(row)
+
+    print("\n--- Groceries Only ---")
+    for row in get_transactions(category_name="Groceries"):
+        print(row)
+
+    print("\n--- November 2026 Only ---")
+    for row in get_transactions(month="2026-11"):
+        print(row)
