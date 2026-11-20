@@ -1,5 +1,13 @@
+import os
+import sys
+import urllib.parse
+import webbrowser
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import f_database
 import f_operations
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+HTML_FILE = os.path.join(BASE_DIR, "f_interface.html")
 
 
 def print_transactions(rows):
@@ -25,7 +33,7 @@ def print_categories():
     return True
 
 
-def main():
+def run_cli():
     f_database.init_db()
 
     while True:
@@ -138,5 +146,124 @@ def main():
             print("Invalid option. Please choose 0-9.")
 
 
+class FinanceWebHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        params = dict(urllib.parse.parse_qsl(parsed.query))
+
+        keyword = params.get("keyword", "").strip() or None
+        t_type = params.get("type", "").strip() or None
+        category = params.get("category", "").strip() or None
+        alert_msg = params.get("msg", "")
+        alert_type = params.get("alert_type", "success")
+
+        transactions = f_operations.list_transactions(t_type=t_type, category_name=category, keyword=keyword)
+        summary = f_operations.get_financial_summary()
+        chart_data = f_database.get_expense_summary_by_category()
+        max_spend = max((total for _, total in chart_data), default=1)
+
+        alert_html = f'<div class="alert {alert_type}">{alert_msg}</div>' if alert_msg else ""
+
+        chart_html = ""
+        if chart_data:
+            for cat, total in chart_data:
+                pct = round((total / max_spend) * 100, 1)
+                chart_html += f"""
+                <div class="bar-row">
+                    <div class="bar-label">{cat}</div>
+                    <div class="bar-track"><div class="bar-fill" style="width: {pct}%;"></div></div>
+                    <div class="bar-amount">${total:,.2f}</div>
+                </div>"""
+        else:
+            chart_html = '<p style="color: var(--muted);">No expenses recorded yet.</p>'
+
+        rows_html = ""
+        if transactions:
+            for _, date, tx_type, cat, amount, desc in transactions:
+                rows_html += f"""
+                <tr>
+                    <td>{date}</td>
+                    <td><span class="badge {tx_type}">{tx_type}</span></td>
+                    <td>{cat}</td>
+                    <td>{desc}</td>
+                    <td style="text-align: right; font-weight: 600;">${amount:,.2f}</td>
+                </tr>"""
+        else:
+            rows_html = '<tr><td colspan="5" style="text-align: center; color: var(--muted);">No transactions found.</td></tr>'
+
+        with open(HTML_FILE, "r", encoding="utf-8") as f:
+            html = f.read()
+
+        html = (
+            html.replace("{{ALERT}}", alert_html)
+            .replace("{{INCOME}}", f"{summary['income']:,.2f}")
+            .replace("{{EXPENSE}}", f"{summary['expense']:,.2f}")
+            .replace("{{BALANCE}}", f"{summary['net_balance']:,.2f}")
+            .replace("{{CHART_ROWS}}", chart_html)
+            .replace("{{TRANSACTION_ROWS}}", rows_html)
+        )
+
+        self.send_response(200)
+        self.send_header("Content-type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(html.encode("utf-8"))
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length).decode("utf-8")
+        data = dict(urllib.parse.parse_qsl(body))
+
+        msg = ""
+        alert_type = "success"
+
+        if self.path == "/add":
+            try:
+                t_type = data["type"]
+                category = data["category"]
+                amount = float(data["amount"])
+                desc = data.get("description", "")
+                date = data.get("date", "") or None
+
+                warning = f_operations.add_transaction(amount, t_type, category, desc, date)
+                if warning:
+                    msg = f"Transaction added! {warning}"
+                    alert_type = "warning"
+                else:
+                    msg = "Transaction added successfully!"
+            except (KeyError, ValueError):
+                msg = "Invalid transaction input."
+                alert_type = "error"
+
+        elif self.path == "/budget":
+            try:
+                category = data["category"]
+                limit = float(data["limit"])
+                msg = f_operations.set_category_budget(category, limit)
+            except (KeyError, ValueError) as e:
+                msg = f"Invalid budget input: {e}"
+                alert_type = "error"
+
+        query = urllib.parse.urlencode({"msg": msg, "alert_type": alert_type})
+        self.send_response(303)
+        self.send_header("Location", f"/?{query}")
+        self.end_headers()
+
+
+def run_web(port=8000):
+    f_database.init_db()
+    server = HTTPServer(("127.0.0.1", port), FinanceWebHandler)
+    url = f"http://127.0.0.1:{port}"
+    print(f"Server running at {url} (Press Ctrl+C to stop)")
+    webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down server...")
+        server.server_close()
+
+
 if __name__ == "__main__":
-    main()
+    if "--cli" in sys.argv:
+        run_cli()
+    else:
+        run_web()
